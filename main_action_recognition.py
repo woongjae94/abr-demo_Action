@@ -55,6 +55,9 @@ def pred_action(frames):
     return result, confidence, top_3
 
 
+#def run_
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="test TF on a single video")
     parser.add_argument('--caption_video_length', type=int, default=64)
@@ -62,14 +65,11 @@ if __name__ == '__main__':
     parser.add_argument('--action_thresh', type=int, default=20)
     parser.add_argument('--frame_thresh', type=int, default=10)
     parser.add_argument('--frame_diff_thresh', type=int, default=0.4)
-    parser.add_argument('--waiting_time', type=int, default=8)
-
     parser.add_argument('--cam', type=int, default=0)  # 0~9 / 10: color / 11: ir1 / 12: ir2 / 13: ir1 + ir2
     parser.add_argument('--width', type=int,
                         default=640)  # RGB(YUY2): 1920x1080, 1280x720, 960x540, 848x480, 640x480, 640x360, 424x240, 320x240, 320x180
     parser.add_argument('--height', type=int,
                         default=480)  # DEPTH : 1280x720, 848x480, 640x480, 640x360, 480x270, 424x240
-    parser.add_argument('--fps', type=int, default=10)  # 6, 15(1920~424), 30(1280~320), 60
     parser.add_argument('--port', type=str, default="8090")
 
     args = parser.parse_args()
@@ -77,12 +77,13 @@ if __name__ == '__main__':
     action_model = TFModel()
 
     ############# added by WoongJae ###################
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(('8.8.8.8', 0))
-    ip = s.getsockname()[0]
-    print("ip : ", ip, " ,port : ", args.port)
+    #s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    #s.connect(('8.8.8.8', 0))
+    #ip = s.getsockname()[0]
+    #rint("ip : ", ip, " ,port : ", args.port)
     mills = lambda: int(round(time.time() * 1000))
     cam_address = 'http://' + 'cam_container' + ':' + args.port + '/?action=stream'
+    ## docker 실행시에 --link 명령어를 이용해 카메라 스트리밍 도커 컨테이너와 연결 필수
     cwd_path = os.getcwd()
     ###################################################
 
@@ -91,7 +92,6 @@ if __name__ == '__main__':
     cap = cv2.VideoCapture(cam_address) # fix
     cap.set(3, args.width)
     cap.set(4, args.height)
-    cap.set(5, args.fps)
 
     frames = []
     sampled_frames = []
@@ -101,146 +101,106 @@ if __name__ == '__main__':
     motion_detect = False
     result = None
     action_list = []
-    intent_list = []
-    intent_result = ''
+
 
     yolo = load_net("./darknet/cfg/yolov3.cfg", "./darknet/cfg/yolov3.weights", 0)
     meta = load_meta("./darknet/cfg/coco.data")
 
+    prev_time = mills() # 현재 시간 ms 단위로 읽기
+    wait_time = prev_time
     while cap.isOpened():
+        now_time = mills()
 
-        action_time = time.time()
+        if (now_time - wait_time) > 60000:
+            print("No Motion for 1 min - reset frame buffer")
+            motion_detect = False
+            sampled_frames = []
+            frames = []
+            prev_time = mills()
+            wait_time = prev_time
 
+        # 스트리밍 서버는 20FPS로 동작중이므로, 현 모델이 학습된 10FPS의 영상을 얻기위해,
+        # 100ms 에 한 번 이미지를 가지고 오도록 설정한다.
+        # 
         ret, frame = cap.read()
         if not ret:
             break
-
-        display_frame = copy.deepcopy(frame)
-        display_frame = cv2.resize(display_frame, (224, 224))
+        if(now_time - prev_time) >= 100:
+            prev_time = now_time
         
-        frame = cv2.resize(frame, (224, 224))
+            frame = cv2.resize(frame, (224, 224))
+            frames.append(frame)
+                # detect
+            r = np_detect(yolo, meta, frame)
 
-        frames.append(frame)
+            if len(r) >= 1:
 
-        # detect
-        r = np_detect(yolo, meta, frame)
+                if len(frames) >= 5:
+                    c_frame = frames[-1]
+                    c_frame = cv2.cvtColor(c_frame, cv2.COLOR_BGR2GRAY)
+                    b_frame = frames[-2]
+                    b_frame = cv2.cvtColor(b_frame, cv2.COLOR_BGR2GRAY)
+                    a_frame = frames[-3]
+                    a_frame = cv2.cvtColor(a_frame, cv2.COLOR_BGR2GRAY)
 
-        if len(r) >= 1:
+                    cb_frame_diff = cv2.absdiff(c_frame, b_frame)
+                    ba_frame_diff = cv2.absdiff(b_frame, a_frame)
 
-            if len(frames) >= 5:
-                c_frame = frames[-1]
-                c_frame = cv2.cvtColor(c_frame, cv2.COLOR_BGR2GRAY)
-                b_frame = frames[-2]
-                b_frame = cv2.cvtColor(b_frame, cv2.COLOR_BGR2GRAY)
-                a_frame = frames[-3]
-                a_frame = cv2.cvtColor(a_frame, cv2.COLOR_BGR2GRAY)
+                    cba_frame_diff = cv2.absdiff(cb_frame_diff, ba_frame_diff)
+                    _, cba_frame_diff = cv2.threshold(cba_frame_diff, 30, 255, cv2.THRESH_BINARY)
 
-                cb_frame_diff = cv2.absdiff(c_frame, b_frame)
-                ba_frame_diff = cv2.absdiff(b_frame, a_frame)
+                    cb_diff_mask = np.array(cb_frame_diff > 10, dtype=np.int32)
+                    ba_diff_mask = np.array(ba_frame_diff > 10, dtype=np.int32)
+                    cba_diff_mask = np.array(cba_frame_diff > 10, dtype=np.int32)
 
-                cba_frame_diff = cv2.absdiff(cb_frame_diff, ba_frame_diff)
-                _, cba_frame_diff = cv2.threshold(cba_frame_diff, 30, 255, cv2.THRESH_BINARY)
+                    try:
+                        diff_thresh = float(1.0*np.sum(cba_diff_mask)/max(np.sum(cb_diff_mask), np.sum(ba_diff_mask)))
 
-                cb_diff_mask = np.array(cb_frame_diff > 10, dtype=np.int32)
-                ba_diff_mask = np.array(ba_frame_diff > 10, dtype=np.int32)
-                cba_diff_mask = np.array(cba_frame_diff > 10, dtype=np.int32)
+                    except:
+                        diff_thresh = 0
 
-                try:
-                     diff_thresh = float(1.0*np.sum(cba_diff_mask)/max(np.sum(cb_diff_mask), np.sum(ba_diff_mask)))
+                    if diff_thresh >= args.frame_diff_thresh and not motion_detect:
+                        motion_detect = True
 
-                except:
-                    diff_thresh = 0
-                # print('(threshold : {})'.format(diff_thresh))
+                    if motion_detect:
+                        #cv2.circle(display_frame, (50, 50), 20, (0, 0, 255), -1)    # 12
+                        # 모션 감지 flask로 보내기
 
-                if diff_thresh >= args.frame_diff_thresh and not motion_detect:
-                    #start_frame = frame_num - 2
-                    motion_detect = True
-                    #print("start frame : {}\n".format(start_frame))
-                # elif diff_thresh < 0.3 :
-                #     motion_detect = False
-                #     # sampled_frames = []
+                        # when the movement stops
+                        if diff_thresh < 0.1:# args.frame_diff_thresh:#frame_num >= start_frame + args.action_video_length:
 
-                if motion_detect:
-                    #cv2.circle(display_frame, (50, 50), 20, (0, 0, 255), -1)    # 12
-                    # 모션 감지 flask로 보내기
-                    # print(start_frame)
+                            if len(frames) >= args.frame_thresh:
+                                sampled_frames = sampling_frames(frames, args.action_video_length)
+                                if len(sampled_frames)==0:
+                                    frames=[]
+                                    motion_detect = False
+                                    continue
 
-                    action_time = time.time()   # reset action_time
+                                # crop all images
+                                cropped_frames = np.array(CropFrames(yolo, meta, sampled_frames))
 
-                    # when the movement stops
-                    if diff_thresh < 0.1:# args.frame_diff_thresh:#frame_num >= start_frame + args.action_video_length:
+                                # zero padding in time-axis
+                                maxlen = 64
+                                preprocessed = np.array(cropped_frames.tolist() + [np.zeros_like(cropped_frames[0])] * (maxlen - len(cropped_frames)))
 
-                        if len(frames) >= args.frame_thresh:
+                                result, confidence, top_3 = pred_action(preprocessed)
+                                print("{}, {}, {}\n".format(result, confidence, top_3))
+                                ##### send to flask here
 
-                            #print('total frames : {}'.format(len(frames[start_frame:])))
-                            sampled_frames = sampling_frames(frames, args.action_video_length)
-                            if len(sampled_frames)==0:
-                                frames=[]
+                                # 한가지 액션에 대한 예측 완료 및 세팅 초기화
                                 motion_detect = False
-                                continue
+                                sampled_frames = []
+                                frames=[]
+                                prev_time = mills()
+                                wait_time = prev_time
+                                
 
-                            """
-                            save_frames = cwd_path + "/Videos/test-video_{}_{}".format('mtsi3d-cropped', '4thdemo')
-                            for num, f in enumerate(sampled_frames):
-                                cnt_action = str(len(action_list))
-                                if not os.path.exists(os.path.join(save_frames, cnt_action)):
-                                    os.makedirs(os.path.join(save_frames, cnt_action))
-                                cv2.imwrite(os.path.join(save_frames, cnt_action, '{}.jpg'.format(num)), f)
-                            """
-                            #print('number of sampled frames : {}'.format(len(sampled_frames)))
-
-                            # crop all images
-
-                            cropped_frames = np.array(CropFrames(yolo, meta, sampled_frames))
-
-                            # zero padding in time-axis
-                            maxlen = 64
-                            preprocessed = np.array(cropped_frames.tolist() + [np.zeros_like(cropped_frames[0])] * (maxlen - len(cropped_frames)))
-
-                            result, confidence, top_3 = pred_action(preprocessed)
-                            print("{}, {}, {}\n".format(result, confidence, top_3))
-                            ##### send to flask
-
-                            event_end_frame = frame_num
-
-                            action_time = time.time()  # reset action_time
-
-                            #if True:#result != None:
-                                # action_end_frame = frame_num
-                                #action_list.append(result)
-
-                            #    if len(action_list) >= args.action_thresh:
-                            #        motion_detect = False
-                            #        break
-                            #else:
-                            #    print("Do the previous action again ..\n")
-
-                            motion_detect = False
-                            sampled_frames = []
-                            frames=[]
-
-                    waiting_time = time.time() - action_time
-                    if waiting_time > args.waiting_time:
-                        print("waiting time : {}".format(waiting_time))
-                        print("Finish detecting actions .\n")
-                        break
-
-        #cv2.imshow('frame', display_frame)
-        #cv2.waitKey(50)
-
-        #cv2.imwrite('/home/pjh/Videos/test-arbitrary_frames/{}.jpg'.format(frame_num), display_frame)
-
-        # print(time.time() - prev_time)
-        #frame_num = frame_num + 1
-
-        # if len(frames) > args.caption_video_length:
-        #     frames.pop(0)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            cap.release()
-            cv2.destroyAllWindows()
-            break
-
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                cap.release()
+                cv2.destroyAllWindows()
+                break
+        # if not ret || (prev - now)>100 end
+    # while end
     cap.release()
     cv2.destroyAllWindows()
 
