@@ -22,7 +22,9 @@ import threading
 
 from darknet.python.darknet import *
 
+global data
 data = 'None'
+global send_count
 send_count = 3
 
 def send_handler(client_socket):
