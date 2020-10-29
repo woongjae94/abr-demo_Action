@@ -18,8 +18,25 @@ from TFModel_mtsi3d import TFModel
 
 import requests
 import socket
+import threading
 
 from darknet.python.darknet import *
+
+data = 'None'
+send_count = 3
+
+def send_handler(client_socket):
+    while True:
+        t_lock.acquire()
+        global send_count
+        if send_count is not 0:
+            global data
+            senddata = data+'$'
+            for i in range(send_count):
+                client_socket.send(senddata.encode('utf-8'))
+        send_count = 0
+        t_lock.release()
+    client_socket.close()
 
 def sampling_frames(input_frames, sampling_num):
     total_num = len(input_frames)
@@ -47,15 +64,12 @@ def sampling_frames(input_frames, sampling_num):
 def pred_action(frames):
     result, confidence, top_3 = action_model.run_demo_wrapper(np.expand_dims(frames, 0))
 
-    if confidence > 0.7 and result != 'Doing other things':
+    if confidence > 0.65:
         return result, confidence, top_3
     else:
-        result = None
+        result = 'None'
 
     return result, confidence, top_3
-
-
-#def run_
 
 
 if __name__ == '__main__':
@@ -76,6 +90,7 @@ if __name__ == '__main__':
 
     action_model = TFModel()
 
+
     ############# added by WoongJae ###################
     #s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     #s.connect(('8.8.8.8', 0))
@@ -89,9 +104,9 @@ if __name__ == '__main__':
 
     #cap = cv2.VideoCapture(args.cam)
     
-    cap = cv2.VideoCapture(cam_address) # fix
-    cap.set(3, args.width)
-    cap.set(4, args.height)
+    #cap = cv2.VideoCapture(cam_address) # fix
+    # cap.set(3, args.width)
+    # cap.set(4, args.height)
 
     frames = []
     sampled_frames = []
@@ -99,16 +114,31 @@ if __name__ == '__main__':
     start_frame = 1
     action_end_frame = 1
     motion_detect = False
-    result = None
-    action_list = []
+    result = 'None'
 
-
+    print("load yolo model....")
     yolo = load_net("./darknet/cfg/yolov3.cfg", "./darknet/cfg/yolov3.weights", 0)
     meta = load_meta("./darknet/cfg/coco.data")
 
+    server_ip = 'Socket_container'
+    port = 8282
+    t_lock = threading.Lock()
+
+    client = "Action"
+    print("## try to connect socket server")
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.connect((server_ip, port))
+    client_socket.send(client.encode('utf-8'))
+    print("connect complete")
+
+    send_thread = threading.Thread(target=send_handler, args=(client_socket,))
+    send_thread.daemon = True
+    send_thread.start()
+    print("## start socket thread")
+
     prev_time = mills() # 현재 시간 ms 단위로 읽기
     wait_time = prev_time
-    while cap.isOpened():
+    while True:
         now_time = mills()
 
         if (now_time - wait_time) > 60000:
@@ -122,10 +152,12 @@ if __name__ == '__main__':
         # 스트리밍 서버는 20FPS로 동작중이므로, 현 모델이 학습된 10FPS의 영상을 얻기위해,
         # 100ms 에 한 번 이미지를 가지고 오도록 설정한다.
         # 
-        ret, frame = cap.read()
-        if not ret:
-            break
+        #ret, frame = cap.read()
+        # if not ret:
+        #     break
         if(now_time - prev_time) >= 100:
+            cap = cv2.VideoCapture(cam_address)
+            ret, frame = cap.read()
             prev_time = now_time
         
             frame = cv2.resize(frame, (224, 224))
@@ -186,6 +218,14 @@ if __name__ == '__main__':
                                 result, confidence, top_3 = pred_action(preprocessed)
                                 print("{}, {}, {}\n".format(result, confidence, top_3))
                                 ##### send to flask here
+                                #if confidence > 0.5:
+                                t_lock.acquire()
+                                global data
+                                global send_count
+                                data = result
+                                send_count = 3
+                                t_lock.release()
+                                
 
                                 # 한가지 액션에 대한 예측 완료 및 세팅 초기화
                                 motion_detect = False
@@ -193,12 +233,8 @@ if __name__ == '__main__':
                                 frames=[]
                                 prev_time = mills()
                                 wait_time = prev_time
-                                
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                cap.release()
-                cv2.destroyAllWindows()
-                break
+            cap.release()
         # if not ret || (prev - now)>100 end
     # while end
     cap.release()
