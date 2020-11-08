@@ -19,6 +19,7 @@ from TFModel_mtsi3d import TFModel
 import requests
 import socket
 import threading
+#import multiprocessing
 
 from darknet.python.darknet import *
 
@@ -28,17 +29,18 @@ global send_count
 send_count = 3
 
 def send_handler(client_socket):
-    while True:
-        t_lock.acquire()
-        global send_count
-        if send_count is not 0:
-            global data
-            senddata = data+'$'
-            for i in range(send_count):
+    try:
+        while True:
+            t_lock.acquire()
+            global send_count
+            if send_count is not 0:
+                global data
+                senddata = 3*(data+'$')
                 client_socket.send(senddata.encode('utf-8'))
-        send_count = 0
-        t_lock.release()
-    client_socket.close()
+            send_count = 0
+            t_lock.release()
+    except:
+        client_socket.close()
 
 def sampling_frames(input_frames, sampling_num):
     total_num = len(input_frames)
@@ -67,6 +69,10 @@ def pred_action(frames):
     result, confidence, top_3 = action_model.run_demo_wrapper(np.expand_dims(frames, 0))
 
     if confidence > 0.65:
+
+        if result == 'leaving':
+            result = 'None'
+
         return result, confidence, top_3
     else:
         result = 'None'
@@ -86,7 +92,7 @@ if __name__ == '__main__':
                         default=640)  # RGB(YUY2): 1920x1080, 1280x720, 960x540, 848x480, 640x480, 640x360, 424x240, 320x240, 320x180
     parser.add_argument('--height', type=int,
                         default=480)  # DEPTH : 1280x720, 848x480, 640x480, 640x360, 480x270, 424x240
-    parser.add_argument('--port', type=str, default="8090")
+    parser.add_argument('--port', type=str, default="3009")
 
     args = parser.parse_args()
 
@@ -99,13 +105,13 @@ if __name__ == '__main__':
     #ip = s.getsockname()[0]
     #rint("ip : ", ip, " ,port : ", args.port)
     mills = lambda: int(round(time.time() * 1000))
-    cam_address = 'http://' + 'cam_container' + ':' + args.port + '/?action=stream'
+    cam_address = 'http://' + 'Localhost' + ':' + args.port + '/?action=stream'
     ## docker 실행시에 --link 명령어를 이용해 카메라 스트리밍 도커 컨테이너와 연결 필수
     cwd_path = os.getcwd()
     ###################################################
 
     #cap = cv2.VideoCapture(args.cam)
-    
+    cap = cv2.VideoCapture(cam_address)
     #cap = cv2.VideoCapture(cam_address) # fix
     # cap.set(3, args.width)
     # cap.set(4, args.height)
@@ -158,11 +164,28 @@ if __name__ == '__main__':
         # if not ret:
         #     break
         if(now_time - prev_time) >= 100:
-            cap = cv2.VideoCapture(cam_address)
             ret, frame = cap.read()
+
+            if not ret:
+                t_lock.acquire()
+                global data
+                global send_count
+                data = "LostContact"
+                send_count = 3
+                t_lock.release()
+                try:
+                    cap.release()
+                    cap = cv2.VideoCapture(cam_address)
+                except:
+                    print("trying to reconnect cam server but failed.")
+                    continue
+
             prev_time = now_time
-        
-            frame = cv2.resize(frame, (224, 224))
+            try:
+                frame = cv2.resize(frame, (224, 224))
+            except:
+                continue
+            
             frames.append(frame)
                 # detect
             r = np_detect(yolo, meta, frame)
@@ -235,8 +258,6 @@ if __name__ == '__main__':
                                 frames=[]
                                 prev_time = mills()
                                 wait_time = prev_time
-
-            cap.release()
         # if not ret || (prev - now)>100 end
     # while end
     cap.release()
