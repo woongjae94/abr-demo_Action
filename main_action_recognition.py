@@ -44,13 +44,15 @@ def send_handler(client_socket):
 
 def sampling_frames(input_frames, sampling_num):
     total_num = len(input_frames)
-    out_frames = []
+    
     interval = 1
     if len(input_frames) > sampling_num:
         interval = math.floor(float(total_num) / sampling_num)
 
     print("sampling interval : {}".format(interval))
     interval = int(interval)
+    out_frames = []
+    
     if interval > 200:
         return out_frames
 
@@ -66,7 +68,10 @@ def sampling_frames(input_frames, sampling_num):
     return out_frames
 
 def pred_action(frames):
-    result, confidence, top_3 = action_model.run_demo_wrapper(np.expand_dims(frames, 0))
+    if len(frames) > 15:
+        result, confidence, top_3 = action_model.run_demo_wrapper(np.expand_dims(frames, 0))
+    else:
+        result, confidence, top_3 = 'None', 0.0, []
 
     if confidence > 0.65:
 
@@ -163,101 +168,101 @@ if __name__ == '__main__':
         #ret, frame = cap.read()
         # if not ret:
         #     break
-        if(now_time - prev_time) >= 100:
-            ret, frame = cap.read()
+        # if(now_time - prev_time) >= 100:
+        ret, frame = cap.read()
 
-            if not ret:
-                t_lock.acquire()
-                global data
-                global send_count
-                data = "LostContact"
-                send_count = 3
-                t_lock.release()
-                try:
-                    cap.release()
-                    cap = cv2.VideoCapture(cam_address)
-                except:
-                    print("trying to reconnect cam server but failed.")
-                    continue
-
-            prev_time = now_time
+        if not ret:
+            t_lock.acquire()
+            global data
+            global send_count
+            data = "LostContact"
+            send_count = 3
+            t_lock.release()
             try:
-                frame = cv2.resize(frame, (224, 224))
+                cap.release()
+                cap = cv2.VideoCapture(cam_address)
             except:
+                print("trying to reconnect cam server but failed.")
                 continue
-            
-            frames.append(frame)
-                # detect
-            r = np_detect(yolo, meta, frame)
 
-            if len(r) >= 1:
+        prev_time = now_time
+        try:
+            frame = cv2.resize(frame, (224, 224))
+        except:
+            continue
+        
+        frames.append(frame)
+            # detect
+        r = np_detect(yolo, meta, frame)
 
-                if len(frames) >= 5:
-                    c_frame = frames[-1]
-                    c_frame = cv2.cvtColor(c_frame, cv2.COLOR_BGR2GRAY)
-                    b_frame = frames[-2]
-                    b_frame = cv2.cvtColor(b_frame, cv2.COLOR_BGR2GRAY)
-                    a_frame = frames[-3]
-                    a_frame = cv2.cvtColor(a_frame, cv2.COLOR_BGR2GRAY)
+        if len(r) >= 1:
 
-                    cb_frame_diff = cv2.absdiff(c_frame, b_frame)
-                    ba_frame_diff = cv2.absdiff(b_frame, a_frame)
+            if len(frames) >= 5:
+                c_frame = frames[-1]
+                c_frame = cv2.cvtColor(c_frame, cv2.COLOR_BGR2GRAY)
+                b_frame = frames[-2]
+                b_frame = cv2.cvtColor(b_frame, cv2.COLOR_BGR2GRAY)
+                a_frame = frames[-3]
+                a_frame = cv2.cvtColor(a_frame, cv2.COLOR_BGR2GRAY)
 
-                    cba_frame_diff = cv2.absdiff(cb_frame_diff, ba_frame_diff)
-                    _, cba_frame_diff = cv2.threshold(cba_frame_diff, 30, 255, cv2.THRESH_BINARY)
+                cb_frame_diff = cv2.absdiff(c_frame, b_frame)
+                ba_frame_diff = cv2.absdiff(b_frame, a_frame)
 
-                    cb_diff_mask = np.array(cb_frame_diff > 10, dtype=np.int32)
-                    ba_diff_mask = np.array(ba_frame_diff > 10, dtype=np.int32)
-                    cba_diff_mask = np.array(cba_frame_diff > 10, dtype=np.int32)
+                cba_frame_diff = cv2.absdiff(cb_frame_diff, ba_frame_diff)
+                _, cba_frame_diff = cv2.threshold(cba_frame_diff, 30, 255, cv2.THRESH_BINARY)
 
-                    try:
-                        diff_thresh = float(1.0*np.sum(cba_diff_mask)/max(np.sum(cb_diff_mask), np.sum(ba_diff_mask)))
+                cb_diff_mask = np.array(cb_frame_diff > 10, dtype=np.int32)
+                ba_diff_mask = np.array(ba_frame_diff > 10, dtype=np.int32)
+                cba_diff_mask = np.array(cba_frame_diff > 10, dtype=np.int32)
 
-                    except:
-                        diff_thresh = 0
+                try:
+                    diff_thresh = float(1.0*np.sum(cba_diff_mask)/max(np.sum(cb_diff_mask), np.sum(ba_diff_mask)))
 
-                    if diff_thresh >= args.frame_diff_thresh and not motion_detect:
-                        motion_detect = True
+                except:
+                    diff_thresh = 0
 
-                    if motion_detect:
-                        #cv2.circle(display_frame, (50, 50), 20, (0, 0, 255), -1)    # 12
-                        # 모션 감지 flask로 보내기
+                if diff_thresh >= args.frame_diff_thresh and not motion_detect:
+                    motion_detect = True
 
-                        # when the movement stops
-                        if diff_thresh < 0.1:# args.frame_diff_thresh:#frame_num >= start_frame + args.action_video_length:
+                if motion_detect:
+                    #cv2.circle(display_frame, (50, 50), 20, (0, 0, 255), -1)    # 12
+                    # 모션 감지 flask로 보내기
 
-                            if len(frames) >= args.frame_thresh:
-                                sampled_frames = sampling_frames(frames, args.action_video_length)
-                                if len(sampled_frames)==0:
-                                    frames=[]
-                                    motion_detect = False
-                                    continue
+                    # when the movement stops
+                    if diff_thresh < 0.1:# args.frame_diff_thresh:#frame_num >= start_frame + args.action_video_length:
 
-                                # crop all images
-                                cropped_frames = np.array(CropFrames(yolo, meta, sampled_frames))
-
-                                # zero padding in time-axis
-                                maxlen = 64
-                                preprocessed = np.array(cropped_frames.tolist() + [np.zeros_like(cropped_frames[0])] * (maxlen - len(cropped_frames)))
-
-                                result, confidence, top_3 = pred_action(preprocessed)
-                                print("{}, {}, {}\n".format(result, confidence, top_3))
-                                ##### send to flask here
-                                #if confidence > 0.5:
-                                t_lock.acquire()
-                                global data
-                                global send_count
-                                data = result
-                                send_count = 3
-                                t_lock.release()
-                                
-
-                                # 한가지 액션에 대한 예측 완료 및 세팅 초기화
-                                motion_detect = False
-                                sampled_frames = []
+                        if len(frames) >= args.frame_thresh:
+                            sampled_frames = sampling_frames(frames, args.action_video_length)
+                            if len(sampled_frames)==0:
                                 frames=[]
-                                prev_time = mills()
-                                wait_time = prev_time
+                                motion_detect = False
+                                continue
+
+                            # crop all images
+                            cropped_frames = np.array(CropFrames(yolo, meta, sampled_frames))
+
+                            # zero padding in time-axis
+                            maxlen = 64
+                            preprocessed = np.array(cropped_frames.tolist() + [np.zeros_like(cropped_frames[0])] * (maxlen - len(cropped_frames)))
+
+                            result, confidence, top_3 = pred_action(preprocessed)
+                            print("{}, {}, {}\n".format(result, confidence, top_3))
+                            ##### send to flask here
+                            #if confidence > 0.5:
+                            t_lock.acquire()
+                            global data
+                            global send_count
+                            data = result
+                            send_count = 3
+                            t_lock.release()
+                            
+
+                            # 한가지 액션에 대한 예측 완료 및 세팅 초기화
+                            motion_detect = False
+                            sampled_frames = []
+                            frames=[]
+                            prev_time = mills()
+                            wait_time = prev_time
         # if not ret || (prev - now)>100 end
     # while end
     cap.release()
